@@ -10,7 +10,7 @@ Identifying Price Manipulation Attack Contracts on Bytecode Level.
 
 
 
-Run `./gigahorse-toolchain/pm_detector.py`
+Run `./tools/gigahorse-toolchain/pm_detector.py`
 ```shell
 $ python3 pm_detector.py -ch eth -b 0xc6028a9Fa486F52efd2B95B949AC630d287CE0aF -dt
 ```

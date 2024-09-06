@@ -1,0 +1,111 @@
+{
+    "swap": {
+        "0x38ed1739": {
+            "token0": 7,
+            "token1": 8,
+            "to_address": 4,
+            "amountIn": 1,
+            "array": 3
+        },
+        "0x8803dbee": {
+            "token0": 7,
+            "token1": 8,
+            "to_address": 4,
+            "amountOut": 1,
+            "array": 3
+        },
+        "0x7ff36ab5": {
+            "to_address": 3,
+            "array": 2
+        },
+        "0x4a25d94a": {
+            "amountOut": 1,
+            "array": 3,
+            "to_address": 4
+        },
+        "0x18cbafe5": {
+            "amountIn": 1,
+            "array": 3,
+            "to_address": 4
+        },
+        "0xfb3bdb41": {
+            "amountOut": 1,
+            "array": 3,
+            "to_address": 4
+        },
+        "0x5c11d795": {
+            "amountIn": 1,
+            "array": 3,
+            "to_address": 4
+        },
+        "0xb6f9de95": {
+            "amountIn": 1,
+            "array": 2,
+            "to_address": 3
+        },
+        "0x791ac947": {
+            "amountIn": 1,
+            "array": 3,
+            "to_address": 4
+        },
+        "0x128acb08": {
+            "amountIn": 3,
+            "direct": 2,
+            "to_address": 1
+        },
+        "0x022c0d9f": {
+            "amountOut": 1,
+            "to_address": 3,
+            "pair": true
+        },
+        "0x414bf389": {
+            "token0": 1,
+            "token1": 2,
+            "to_address": 4,
+            "amountIn": 6
+        },
+        "0xdb3e2198": {
+            "token0": 1,
+            "token1": 2,
+            "to_address": 4,
+            "amountOut": 6
+        },
+        "0x3df02124": {
+            "token0": 1,
+            "token1": 2,
+            "to_self": true
+        },
+        "0x490e6cbc": {
+            "token0": 1,
+            "token1": 2,
+            "to_self": true
+        },
+        "0xa6417ed6": {
+            "amountOut": 1,
+            "pair": true,
+            "to_self": true
+        }
+    },
+    "liquidity": {
+        "0xe8e33700": {
+            "token0": 1,
+            "token1": 2,
+            "to_address": 7
+        },
+        "0xf305d719": {
+            "token0": 1,
+            "token1": "native",
+            "to_address": 5
+        },
+        "0x02751cec": {
+            "token0": 1,
+            "token1": "native",
+            "to_address": 5
+        },
+        "0xbaa2abde": {
+            "token0": 1,
+            "token1": 2,
+            "to_address": 7
+        }
+    }
+}

@@ -1,0 +1,578 @@
+#include "../clientlib/decompiler_imports.dl"
+// #include "../clientlib/loops_semantics.dl"
+#include "../clientlib/guards.dl"
+// #include "../clientlib/vulnerability_macros.dl"
+
+.decl AK_BacktraceVar(var: Variable, originVar: Variable)
+
+// backtrace dataflow
+AK_BacktraceVar(var, originVar) :-
+    DataFlows(originVar, var).
+
+.output AK_BacktraceVar
+
+.decl AK_Func_Call_Block(func:Function, block:Block)
+
+.decl AK_Func_Call_Stmt(func:Function, stmt:Statement)
+
+.decl AK_Func_Stmt_Call(stmt:Statement, func:Function)
+
+AK_Func_Call_Block(func, block), AK_Func_Call_Stmt(func, stmt), AK_Func_Stmt_Call(stmt, func) :-
+    (Statement_Opcode(stmt, "CALL") ; Statement_Opcode(stmt, "STATICCALL") ; Statement_Opcode(stmt, "DELEGATECALL")),
+    Statement_Block(stmt, block),
+    InFunction(block, func).
+
+.output AK_Func_Call_Block
+.output AK_Func_Call_Stmt
+.output AK_Func_Stmt_Call
+
+
+// get the call address func 4 bytes(arg) in the memory
+.decl AK_FuncSelectorArg(stmt:Statement, var: Variable)
+
+AK_FuncSelectorArg(callsite, var) :-
+    Statement_Opcode(callsite, "CALL"),    
+    MemoryStatement_ActualArg(callsite, var, 3).
+
+AK_FuncSelectorArg(callsite, var) :-
+    (Statement_Opcode(callsite, "DELEGATECALL");Statement_Opcode(callsite, "STATICCALL")),
+    MemoryStatement_ActualArg(callsite, var, 2).
+
+// meet 3 cases
+// 1. const directly eg. v340V95(0xb603cd80) = AND v33bV95(0xffffffff), v332V95(0xb603cd80)
+// 2. "OR" operation eg. v200V95 = OR v1ffV95(0xe56f2fe400000000000000000000000000000000000000000000000000000000), v1f7V95
+// 3. cannot acquire
+.decl AK_Func_4Bytes(stmt: Statement, selector: Value)
+
+AK_Func_4Bytes(callsite, selector) :-
+    AK_FuncSelectorArg(callsite, var),
+    (
+        Variable_Value(var, selector);
+        (
+            Statement_Defines(stmt, var, 0),
+            Statement_Opcode(stmt, "OR"),
+            Statement_Uses(stmt, origin_var, 0),
+            Variable_Value(origin_var, selector)
+        )
+    ).
+
+.output AK_Func_4Bytes
+
+
+// address(this) => inter-contract
+// const address => cross-contract analysis
+// address got by calldataload => probably external call
+.decl AK_Contract_Addr(stmt:Statement, var: Variable, calltype:Value)
+
+AK_Contract_Addr(callsite, addr_var, calltype) :-
+    ((Statement_Opcode(callsite, "CALL"), calltype="CALL");
+    (Statement_Opcode(callsite, "STATICCALL"), calltype="STATICCALL");
+    (Statement_Opcode(callsite, "DELEGATECALL"), calltype="DELEGATECALL")),
+    MemoryStatement_ActualArg(callsite, addr_var, 1).
+
+.output AK_Contract_Addr
+
+
+.decl AK_True_Contract_Addr(stmt:Statement, var:Variable, calltype:Value)
+
+AK_True_Contract_Addr(callsite, addr_var, calltype) :-
+    ((Statement_Opcode(callsite, "CALL"), calltype="CALL");
+    (Statement_Opcode(callsite, "STATICCALL"), calltype="STATICCALL");
+    (Statement_Opcode(callsite, "DELEGATECALL"), calltype="DELEGATECALL")),
+    !AK_Contract_Addr(callsite, _, _),
+    Statement_Uses(callsite, addr_var, 1).
+
+.output AK_True_Contract_Addr
+
+// another way to trace 4bytes
+// .decl AK_Potential_Selector(block:Block, var:Variable)
+
+// AK_Potential_Selector(block, val) :-
+//     Statement_Block(stmt, block)
+
+.decl AK_Revert_Block(block:Block)
+
+AK_Revert_Block(block) :-
+    (Statement_Opcode(stmt, "REVERT");Statement_Opcode(stmt, "THROW")),
+    Statement_Block(stmt, block).
+
+.output AK_Revert_Block
+
+
+
+// .decl AK_BlockOrder(father:Block, child:Block)
+// AK_BlockOrder(father, child) :-
+//     LocalBlockEdge(father, child).
+
+// AK_BlockOrder(father, child) :- 
+//     AK_BlockOrder(father, middle), AK_BlockOrder(middle, child).
+
+// // CALLPRIVATE : from a basic block end and jump to another func's entry block
+// AK_BlockOrder(father, child) :-
+//     GlobalBlockEdge(father, child).
+
+// .output AK_BlockOrder
+
+// get call-contract addr and type
+// 1. const (hardcode)
+// 2. storage (get slot)
+// 3. address(this) (opcode : ADDRESS)
+// 4. calldataload (as func params)
+.decl AK_Call_Addr_withType(callsite:Statement, var:Variable, origin_var:Variable, type:Value, addr:Value)
+
+AK_Call_Addr_withType(callsite, var, origin_var, type, addr) :-
+    (AK_Contract_Addr(callsite, var, _);AK_True_Contract_Addr(callsite, var, _)),
+    (
+       (
+        Variable_Value(var, addr),
+        type="CONST",
+        origin_var = var
+       );
+       (
+        (
+            AK_BacktraceVar(var, origin_var),
+            Statement_Defines(stmt, origin_var, 0),
+            Statement_Opcode(stmt, "SLOAD"),
+            Statement_Uses(stmt, slot_var, 0),
+            // addr here is the idx of slot
+            Variable_Value(slot_var, addr),
+            type="STORAGE"
+        );
+        (
+            AK_BacktraceVar(var, origin_var),
+            Statement_Defines(stmt, origin_var, 0),
+            Statement_Opcode(stmt, "ADDRESS"),
+            addr = "",
+            type = "ADDRESS"
+        );
+        (
+            AK_BacktraceVar(var, origin_var),
+            Statement_Defines(stmt, origin_var, 0),
+            Statement_Opcode(stmt, "CALLDATALOAD"),
+            addr = "",
+            type = "CALLDATA"
+        )
+       )
+    ).
+
+.output  AK_Call_Addr_withType
+
+
+// trace potential call back case
+.decl AK_Trace_CallBack_Seletor(callsite:Statement, block:Block)
+
+AK_Trace_CallBack_Seletor(callsite, block) :-
+    (Statement_Opcode(callsite, "CALL");Statement_Opcode(callsite, "STATICCALL")),
+    StatementUsesMemory_ActualMemoryArg(callsite, _, argIdx, actual_arg),
+    // exclude selector
+    argIdx != 0,
+    AK_BacktraceVar(actual_arg, addr_var),
+    Statement_Defines(stmt, addr_var, 0),
+    Statement_Opcode(stmt, "ADDRESS"),
+    Statement_Block(stmt, block).
+
+// .output AK_Trace_CallBack_Seletor
+
+// ---------------------------------------------------------------------------------
+
+
+.decl AK_MASK_Compare(stmt:Statement, var:Variable, eqstmt:Statement)
+
+AK_MASK_Compare(stmt, funcVar, eqstmt) :- 
+    DataFlows(funcVar, var),
+    (
+        (AND(stmt, var, maskVar, resVar),
+        Variable_Value(maskVar, "0xffffffffffffffffffffffffffffffffffffffff"));
+        (AND(stmt, maskVar, var, resVar),
+        Variable_Value(maskVar, "0xffffffffffffffffffffffffffffffffffffffff"))
+    ),
+    (EQ(eqstmt, resVar, _, _);EQ(eqstmt, _, resVar, _)).
+
+.output AK_MASK_Compare
+
+// whether judge the addr is valid
+.decl AK_ConditionVar(var:Variable, tvar:Variable)
+
+// ignore ISZERO: most time just for format checking
+AK_ConditionVar(var, tvar) :-
+    Statement_Opcode(stmt, "EQ"),
+    Statement_Uses(stmt, tvar, _),
+    DataFlows(var, tvar),
+    !AK_MASK_Compare(_, var, stmt).
+
+.output AK_ConditionVar
+
+// find onlyOwner related
+.decl AK_OnlyOwner(func:Function)
+
+AK_OnlyOwner(func) :-
+    InFunction(block, func),
+    Statement_Block(stmt, block),
+    EQ(stmt, a, b, _),
+    ((CALLER(_, a);ORIGIN(_, a));(CALLER(_, b);ORIGIN(_, b))).
+
+
+.output AK_OnlyOwner
+
+// spread pub func arg to external call addr specifically
+.decl AK_FuncArg2CallAddr(func:Function, funcSig:symbol, funcArgIndex:number, funcArg:Variable, callsite:Statement, addrVar:Variable)
+
+AK_FuncArg2CallAddr(func, funcSig, funcArgIndex, funcArg, callStmt, addrVar) :-
+  PublicFunctionSelector(func, funcSig),
+  PublicFunctionArg(func, funcArg, funcArgIndex),
+  !AK_ConditionVar(funcArg, _),
+  !AK_OnlyOwner(func),
+  (CALL(callStmt, _, addrVar, _, _, _, _, _, _);STATICCALL(callStmt, _, addrVar, _, _, _, _, _);DELEGATECALL(callStmt, _, addrVar, _, _, _, _, _)),
+  DataFlows(funcArg, addrVar).
+  
+.output AK_FuncArg2CallAddr
+
+// transfer sensitive operation
+.decl AK_TransferOp(callsite:Statement, func:Function, recipient:Variable)
+
+AK_TransferOp(callsite, func, recipient) :-
+    AK_Func_4Bytes(callsite, selector),
+    (selector="0xa9059cbb00000000000000000000000000000000000000000000000000000000";selector="0xa9059cbb"),
+    StatementUsesMemory_ActualMemoryArg(callsite, _, 1, recipient),
+    Statement_Block(callsite, block),
+    InFunction(block, func).
+
+AK_TransferOp(callsite, func, recipient) :-
+    AK_Func_4Bytes(callsite, selector),
+    (selector="0x23b872dd00000000000000000000000000000000000000000000000000000000";selector="0x23b872dd"),
+    StatementUsesMemory_ActualMemoryArg(callsite, _, 2, recipient),
+    Statement_Block(callsite, block),
+    InFunction(block, func).
+
+.output AK_TransferOp
+
+.decl AK_ArbitraryAddr(func:Function, funcSig:symbol, funcArg:Variable, callsite:Statement)
+
+AK_ArbitraryAddr(func, funcSig, funcArg, callsite) :-
+    AK_FuncArg2CallAddr(func, funcSig, _, funcArg, _, _),
+    AK_TransferOp(callsite, func, recipient),
+    (
+        DataFlows(funcArg, recipient);
+        (CALLER(_, recipient);ORIGIN(_, recipient))
+    ).
+
+.output AK_ArbitraryAddr
+
+// trace uncontrolled delegate contract upgrade
+.decl AK_SensitiveDelegate(func:Function, funcSig:symbol, funcArgIndex:number, funcArg:Variable, store_stmt:Statement, addrVar:Variable)
+
+AK_SensitiveDelegate(func, funcSig, funcArgIndex, funcArg, store_stmt, addrVar) :- 
+    PublicFunctionSelector(func, funcSig),
+    PublicFunctionArg(func, funcArg, funcArgIndex),
+    !AK_ConditionVar(funcArg, _),
+    !AK_OnlyOwner(func),
+    DataFlows(funcArg, addrVar),
+    SSTORE(store_stmt, idx, addrVar),
+    Variable_Value(idx, value),
+    (value = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc";value="0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103").
+
+.output AK_SensitiveDelegate
+
+// args contain contract address itself
+.decl AK_TraceMemCallAddr(callsite:Statement, var:Variable)
+
+AK_TraceMemCallAddr(callsite, var) :-
+    (Statement_Opcode(callsite, "CALL");Statement_Opcode(callsite, "STATICCALL");Statement_Opcode(callsite, "DELEGATECALL")),
+    StatementUsesMemory_ActualMemoryArg(callsite, _, argIdx, tvar),
+    argIdx != 0,
+    DataFlows(var, tvar),
+    ADDRESS(_, var).
+
+
+.decl AK_TraceMemSelector(callsite:Statement, var1:Variable, var2:Variable, to:Variable)
+
+AK_TraceMemSelector(callsite, const1, storeAddr1, var) :- 
+    AK_TraceMemCallAddr(callsite, _),
+    StatementUsesMemory_ActualMemoryArg(callsite, _, argIdx, var),
+    argIdx != 0,
+    MLOADFreePtr_To(_, storeAddr1),
+    MSTORE(_, var, _),
+    ADDFix(_, var, const1, storeAddr1).
+
+.output AK_TraceMemSelector
+
+
+.decl AK_TraceCallArrayParams(callsite:Statement, idxVar:Variable, idxNum:Value, finalVar:Variable, slotNum:Value, addrType:Value, argIdx:number)
+
+AK_TraceCallArrayParams(callsite, idxVar, idxNum, finalVar, slotNum, addrType, argIdx) :-
+    StatementUsesMemory_ActualMemoryArg(callsite, _, argIdx, var),
+    argIdx != 0,
+    Array_ElementLength(var, "0x20"),
+    ArrayFromArray(var, realarray),
+    ArrayIndexAccess(realarray, tempVar, idxVar),
+    Variable_Value(idxVar, idxNum),
+    MSTORE(_, tempVar, ttempVar),
+    DataFlows(finalVar, ttempVar),
+    SLOAD(_, slotVar, finalVar),
+    Variable_Value(slotVar, slotNum),
+    addrType = "STORAGE".
+
+AK_TraceCallArrayParams(callsite, idxVar, idxNum, finalVar, slotNum, addrType, argIdx) :-
+    StatementUsesMemory_ActualMemoryArg(callsite, _, argIdx, var),
+    argIdx != 0,
+    Array_ElementLength(var, "0x20"),
+    ArrayFromArray(var, realarray),
+    ArrayStoreAtIndex(_, realarray, idxVar, finalVar),
+    Variable_Value(idxVar, idxNum),
+    // slotNum here means address hardcoded.
+    Variable_Value(finalVar, slotNum),
+    addrType = "CONST".
+
+AK_TraceCallArrayParams(callsite, idxVar, idxNum, finalVar, slotNum, addrType, argIdx) :-
+    StatementUsesMemory_ActualMemoryArg(callsite, _, argIdx, var),
+    argIdx != 0,
+    Array_ElementLength(var, "0x20"),
+    ArrayIndexAccess(var, tempVar, idxVar),
+    Variable_Value(idxVar, idxNum),
+    MSTORE(_, tempVar, ttempVar),
+    DataFlows(finalVar, ttempVar),
+    SLOAD(_, slotVar, finalVar),
+    Variable_Value(slotVar, slotNum),
+    addrType = "STORAGE".
+
+AK_TraceCallArrayParams(callsite, idxVar, idxNum, finalVar, slotNum, addrType, argIdx) :-
+    StatementUsesMemory_ActualMemoryArg(callsite, _, argIdx, var),
+    argIdx != 0,
+    Array_ElementLength(var, "0x20"),
+    ArrayStoreAtIndex(_, var, idxVar, finalVar),
+    Variable_Value(idxVar, idxNum),
+    // slotNum here means address hardcoded.
+    Variable_Value(finalVar, slotNum),
+    addrType = "CONST".
+
+AK_TraceCallArrayParams(callsite, idxVar, idxNum, finalVar, slotNum, addrType, argIdx) :-
+    StatementUsesMemory_ActualMemoryArg(callsite, _, argIdx, var),
+    argIdx != 0,
+    Array_ElementLength(var, "0x20"),
+    ArrayFromArray(var, realarray),
+    ArrayIndexAccess(realarray, tempVar, idxVar),
+    Variable_Value(idxVar, idxNum),
+    MSTORE(_, tempVar, ttempVar),
+    DataFlows(finalVar, ttempVar),
+    CALLDATALOAD(_, slotVar, finalVar),
+    Variable_Value(slotVar, slotNum),
+    addrType = "CALLDATA".
+
+AK_TraceCallArrayParams(callsite, idxVar, idxNum, finalVar, slotNum, addrType, argIdx) :-
+    StatementUsesMemory_ActualMemoryArg(callsite, _, argIdx, var),
+    argIdx != 0,
+    Array_ElementLength(var, "0x20"),
+    ArrayIndexAccess(var, tempVar, idxVar),
+    Variable_Value(idxVar, idxNum),
+    MSTORE(_, tempVar, ttempVar),
+    DataFlows(finalVar, ttempVar),
+    CALLDATALOAD(_, slotVar, finalVar),
+    Variable_Value(slotVar, slotNum),
+    addrType = "CALLDATA".
+
+.output AK_TraceCallArrayParams
+
+.decl AK_RECUR_ADDFIX(a:Variable, offset:symbol, to:Variable)
+
+AK_RECUR_ADDFIX(a, offset, to) :-
+    ADDFix(_, a, b, to),
+    Variable_Value(b, offset).
+
+AK_RECUR_ADDFIX(a, offset, to2) :-
+    AK_RECUR_ADDFIX(a, offset1, to1),
+    AK_RECUR_ADDFIX(to1, offset2, to2),
+    offset = @number_to_hex(@hex_to_number(offset1) + @hex_to_number(offset2)).
+
+.output AK_RECUR_ADDFIX
+
+
+.decl AK_RetToCallArg(callStmt1:Statement, callRet:Variable, callRetIndex:number, callStmt2:Statement, callArgIndex:number, callArg:Variable)
+
+AK_RetToCallArg(callStmt1, callRet, callRetIndex, callStmt2, callArgIndex, callArg) :-
+  ExternalCall_ActualReturn(callStmt1, callRet, callRetIndex),
+  (CALL(callStmt2, _, _, _, _, _, _, _, _);STATICCALL(callStmt2, _, _, _, _, _, _, _);DELEGATECALL(callStmt2, _, _, _, _, _, _, _)),
+  StatementUsesMemory_ActualMemoryArg(callStmt2, _, callArgIndex, callArg),
+  callArgIndex != 0,
+  DataFlows(callRet, callArg).
+
+AK_RetToCallArg(callStmt1, callRet, callRetIndex, callStmt2, callArgIndex, callArg) :-
+  ExternalCall_ActualReturn(callStmt1, callRet, callRetIndex),
+  (CALL(callStmt2, _, _, _, _, _, _, _, _);STATICCALL(callStmt2, _, _, _, _, _, _, _);DELEGATECALL(callStmt2, _, _, _, _, _, _, _)),
+  StatementUsesMemory_ActualMemoryArg(callStmt2, _, callArgIndex, callArg),
+  callArgIndex != 0,
+  DataFlows(var, callArg),
+  MLOAD(_, idx, var),
+  ADDFix(_, baseidx, offset, idx),
+  Variable_Value(offset, offset_val),
+  AK_RECUR_ADDFIX(baseidx, offset_val, idx2),
+  idx2 != idx,
+  MSTORE(_, idx2, finalVar),
+  DataFlows(callRet, finalVar).
+
+// another case:
+// array[] = funcA -> funcA(xxx, array[idx], xxx)
+AK_RetToCallArg(callStmt1, callRet, callRetIndex, callStmt2, callArgIndex, callArg) :-
+  ExternalCall_ActualReturn(callStmt1, callRet, callRetIndex),
+  (CALL(callStmt2, _, _, _, _, _, _, _, _);STATICCALL(callStmt2, _, _, _, _, _, _, _);DELEGATECALL(callStmt2, _, _, _, _, _, _, _)),
+  StatementUsesMemory_ActualMemoryArg(callStmt2, _, callArgIndex, callArg),
+  callArgIndex != 0,
+  ArrayLoadAtIndex(_, arrId, _, callArg),
+  ArrayAllocation(arrId, _, tempVar),
+  MLOAD(_, idx, tempVar),
+  DataFlows(callRet, idx).
+
+.output AK_RetToCallArg
+
+// load const params from memory variable
+// eg. definition in a function:
+//     uint a = 1;
+//     address token = 0x014ee3c3de6941cb0202dd2b30c89309e874b114;
+// in this case, we specifically target on addr
+.decl AK_TraceCallMemParams(callsite:Statement, argIdx:number, addr:Value, arg:Variable)
+
+AK_TraceCallMemParams(callsite, argIdx, addr, tvar) :-
+    Statement_Opcode(callsite, "CALL"),
+    StatementUsesMemory_ActualMemoryArg(callsite, _, argIdx, tvar),
+    argIdx != 0,
+    DataFlows(var, tvar),
+    MLOAD(_, idx, var),
+    ADDFix(_, baseidx, offset, idx),
+    Variable_Value(offset, offset_val),
+    offset_val = "0x0",
+    MSTORE(_, baseidx, addrVar),
+    Variable_Value(addrVar, addr).
+
+AK_TraceCallMemParams(callsite, argIdx, addr, tvar) :-
+    Statement_Opcode(callsite, "CALL"),
+    StatementUsesMemory_ActualMemoryArg(callsite, _, argIdx, tvar),
+    argIdx != 0,
+    DataFlows(var, tvar),
+    MLOAD(_, idx, var),
+    ADDFix(_, baseidx, offset1, idx),
+    Variable_Value(offset1, offset_val),
+    offset_val != "0x0",
+    // ADDFix(_, baseidx, offset2, idx2),
+    // Variable_Value(offset2, offset_val2),
+    // offset_val = offset_val2,
+    AK_RECUR_ADDFIX(baseidx, offset_val, idx2),
+    idx != idx2,
+    MSTORE(_, idx2, addrVar),
+    (
+        Variable_Value(addrVar, addr);
+        (
+            DataFlows(finalVar, addrVar),
+            ADDRESS(_, finalVar),
+            addr = "address(this)"
+        )
+
+    ).
+    
+
+.output AK_TraceCallMemParams
+
+// callsite params that include msg.sender or address 
+.decl AK_CallTaintParams(callsite:Statement, addrVar:Variable, addrType:Value, argIdx:number)
+
+AK_CallTaintParams(callsite, addrVar, addrType, argIdx) :-
+    Statement_Opcode(callsite, "CALL"),
+    StatementUsesMemory_ActualMemoryArg(callsite, _, argIdx, tvar),
+    argIdx!=0,
+    DataFlows(addrVar, tvar),
+    (
+        (ADDRESS(_, addrVar), addrType="ADDRESS");
+        (CALLER(_, addrVar), addrType="CALLER");
+        (ORIGIN(_, addrVar), addrType="ORIGIN")
+    ).
+
+.output AK_CallTaintParams
+
+
+.decl AK_CallStorageParams(callsite:Statement, addrVar:Variable, slotNum:Value, argIdx:number)
+
+AK_CallStorageParams(callsite, addrVar, slotNum, argIdx) :-
+    Statement_Opcode(callsite, "CALL"),
+    StatementUsesMemory_ActualMemoryArg(callsite, _, argIdx, tvar),
+    argIdx!=0,
+    DataFlows(addrVar, tvar),
+    SLOAD(_, slotVar, addrVar),
+    Variable_Value(slotVar, slotNum).
+
+.output AK_CallStorageParams
+
+
+.decl AK_CallConstParams(callsite:Statement, addrVar:Variable, value:Value, argIdx:number)
+
+AK_CallConstParams(callsite, addrVar, value, argIdx) :-
+    Statement_Opcode(callsite, "CALL"),
+    StatementUsesMemory_ActualMemoryArg(callsite, _, argIdx, addrVar),
+    argIdx!=0,
+    // DataFlows(addrVar, tvar),
+    Variable_Value(addrVar, value).
+
+.output AK_CallConstParams
+
+
+.decl AK_CallCallDataParams(callsite:Statement, addrVar:Variable, offset:Value, argIdx:number)
+
+AK_CallCallDataParams(callsite, addrVar, offset, argIdx) :-
+    Statement_Opcode(callsite, "CALL"),
+    StatementUsesMemory_ActualMemoryArg(callsite, _, argIdx, tvar),
+    argIdx!=0,
+    DataFlows(addrVar, tvar),
+    CALLDATALOAD(_, slotVar, addrVar),
+    Variable_Value(slotVar, offset).
+
+.output AK_CallCallDataParams
+
+
+// cannot recover through above ways
+.decl AK_CallRestParams(callsite:Statement, paramVar:Variable, argIdx:number)
+
+AK_CallRestParams(callsite, paramVar, argIdx) :-
+    Statement_Opcode(callsite, "CALL"),
+    !AK_TraceCallArrayParams(callsite, _, _, _, _, _, argIdx),
+    !AK_TraceCallMemParams(callsite, argIdx, _, _),
+    !AK_CallTaintParams(callsite, _, _, argIdx),
+    !AK_CallStorageParams(callsite, _, _, argIdx),
+    !AK_CallConstParams(callsite, _, _, argIdx),
+    !AK_CallCallDataParams(callsite, _, _, argIdx),
+    argIdx!=0,
+    StatementUsesMemory_ActualMemoryArg(callsite, _, argIdx, paramVar).
+
+.output AK_CallRestParams
+
+.decl AK_CallParamsNum(callsite:Statement, num:number)
+
+AK_CallParamsNum(callsite, num-1) :-
+    Statement_Opcode(callsite, "CALL"),
+    num = count: StatementUsesMemory_ActualMemoryArg(callsite, _, _, _).
+
+.output AK_CallParamsNum
+
+.decl AK_CallParamIsAddr(callsite:Statement, paramVar:Variable)
+
+// search stmt: and var, 0xffffffffffffffffffffffffffffffffffffffff
+// that means var is a address
+AK_CallParamIsAddr(callsite, addrVar) :-
+    Statement_Opcode(callsite, "CALL"),
+    StatementUsesMemory_ActualMemoryArg(callsite, _, argIdx, tvar),
+    argIdx!=0,
+    DataFlows(addrVar, tvar),
+    (
+        (AND(_, _, maskVar, addrVar),
+        Variable_Value(maskVar, "0xffffffffffffffffffffffffffffffffffffffff"));
+        (AND(_, maskVar, _, addrVar),
+        Variable_Value(maskVar, "0xffffffffffffffffffffffffffffffffffffffff"))
+    ).
+
+.output AK_CallParamIsAddr
+
+.decl AK_CallwithSelfBalanceValue(callsite:Statement)
+
+AK_CallwithSelfBalanceValue(callsite) :-
+    CALL(callsite, _, _, valueVar, _, _, _, _, _),
+    DataFlows(oVar, valueVar),
+    Statement_Opcode(oStmt, "SELFBALANCE"),
+    Statement_Defines(oStmt, oVar, 0).
+
+.output AK_CallwithSelfBalanceValue
