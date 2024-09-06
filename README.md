@@ -5,7 +5,7 @@ Identifying Price Manipulation Attack Contracts on Bytecode Level.
 
 ## Usage
 
-- install [gigahorse-toolchain](gigahorse-toolchain/README.md)
+- install [gigahorse-toolchain](./tools/gigahorse-toolchain/README.md)
 - python >= 3.8
 
 
